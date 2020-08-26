@@ -14,12 +14,13 @@
 #import "LDNetGetAddress.h"
 #import "LDNetTimer.h"
 #import "LDNetConnect.h"
+#import <react-native-netinfo/RNCConnectionStateWatcher.h>
 
 static NSString *const kPingOpenServerIP = @"";
 static NSString *const kCheckOutIPURL = @"";
 
 @interface LDNetDiagnoService () <LDNetPingDelegate, LDNetTraceRouteDelegate,
-                                  LDNetConnectDelegate> {
+                                  LDNetConnectDelegate, RNCConnectionStateWatcherDelegate> {
     NSString *_appCode;  //客户端标记
     NSString *_appName;
     NSString *_appVersion;
@@ -48,6 +49,7 @@ static NSString *const kCheckOutIPURL = @"";
  */
 @property (nonatomic, assign) NSInteger finishDomainCount;
 @property (nonatomic, copy) LDNetDiagnoServiceDidEndBlock didEndBlock;
+@property (nonatomic, strong) RNCConnectionStateWatcher *connectionStateWatcher;
 @end
 
 @implementation LDNetDiagnoService
@@ -68,6 +70,9 @@ static NSString *const kCheckOutIPURL = @"";
         
         _finishDomainCount = 0;
         
+        // 初始化网络状态监测
+        _connectionStateWatcher = [[RNCConnectionStateWatcher alloc] initWithDelegate:self];
+        
         // 在初始化方法中加入 _traceRouter 的初始化以实现一个 _traceRouter 对应多个 domain 的场景
         _traceRouter = [[LDNetTraceRoute alloc] initWithMaxTTL:TRACEROUTE_MAX_TTL
                                                        timeout:TRACEROUTE_TIMEOUT
@@ -82,6 +87,11 @@ static NSString *const kCheckOutIPURL = @"";
         _didEndBlock = didEndBlock;
     }
     return self;
+}
+
+- (void)dealloc
+{
+  self.connectionStateWatcher = nil;
 }
 
 /**
@@ -130,7 +140,7 @@ static NSString *const kCheckOutIPURL = @"";
     
     // Ping
     if (_netPinger) {
-        [self pingDialogsis:YES];
+        [self pingDialogsisWithHost:domain];
     }
     
     // traceroute
@@ -220,7 +230,7 @@ static NSString *const kCheckOutIPURL = @"";
 {
     //判断是否联网以及获取网络类型
     NSArray *typeArr = [NSArray arrayWithObjects:@"2G", @"3G", @"4G", @"5G", @"wifi", nil];
-    _curNetType = [LDNetGetAddress getNetworkTypeFromStatusBar];
+    _curNetType = [self getNetworkConnectionType];
     if (_curNetType == 0) {
         [self recordStepInfo:[NSString stringWithFormat:@"Is currently online: offline"]];
     } else {
@@ -252,38 +262,42 @@ static NSString *const kCheckOutIPURL = @"";
 /**
  * 构建ping列表并进行ping诊断
  */
-- (void)pingDialogsis:(BOOL)pingLocal
+- (void)pingDialogsisWithHost:(NSString *)host
 {
     //诊断ping信息, 同步过程
     NSMutableArray *pingAdd = [[NSMutableArray alloc] init];
     NSMutableArray *pingInfo = [[NSMutableArray alloc] init];
-    if (pingLocal) {
-        [pingAdd addObject:@"127.0.0.1"];
-        [pingInfo addObject:@"Local"];
-        [pingAdd addObject:_localIp];
-        [pingInfo addObject:@"Local IP"];
-        if (_gatewayIp && ![_gatewayIp isEqualToString:@""]) {
-            [pingAdd addObject:_gatewayIp];
-            [pingInfo addObject:@"Local Gateway"];
-        }
-        if ([_dnsServers count] > 0) {
-            [pingAdd addObject:[_dnsServers objectAtIndex:0]];
-            [pingInfo addObject:@"DNS Server"];
-        }
-    }
-
+    
     [self recordStepInfo:@"\nStart ping..."];
+    [_netPinger runWithHostName:host normalPing:YES];
+    
+//    if (pingLocal) {
+//        [pingAdd addObject:@"127.0.0.1"];
+//        [pingInfo addObject:@"Local"];
+//        [pingAdd addObject:_localIp];
+//        [pingInfo addObject:@"Local IP"];
+//        if (_gatewayIp && ![_gatewayIp isEqualToString:@""]) {
+//            [pingAdd addObject:_gatewayIp];
+//            [pingInfo addObject:@"Local Gateway"];
+//        }
+//        if ([_dnsServers count] > 0) {
+//            [pingAdd addObject:[_dnsServers objectAtIndex:0]];
+//            [pingInfo addObject:@"DNS Server"];
+//        }
+//    }
 
-    for (int i = 0; i < [pingAdd count]; i++) {
-        [self recordStepInfo:[NSString stringWithFormat:@"ping: %@ %@ ...",
-                                                        [pingInfo objectAtIndex:i],
-                                                        [pingAdd objectAtIndex:i]]];
-        if ([[pingAdd objectAtIndex:i] isEqualToString:kPingOpenServerIP]) {
-            [_netPinger runWithHostName:[pingAdd objectAtIndex:i] normalPing:YES];
-        } else {
-            [_netPinger runWithHostName:[pingAdd objectAtIndex:i] normalPing:YES];
-        }
-    }
+    
+
+//    for (int i = 0; i < [pingAdd count]; i++) {
+//        [self recordStepInfo:[NSString stringWithFormat:@"ping: %@ %@ ...",
+//                                                        [pingInfo objectAtIndex:i],
+//                                                        [pingAdd objectAtIndex:i]]];
+//        if ([[pingAdd objectAtIndex:i] isEqualToString:kPingOpenServerIP]) {
+//            [_netPinger runWithHostName:[pingAdd objectAtIndex:i] normalPing:YES];
+//        } else {
+//            [_netPinger runWithHostName:[pingAdd objectAtIndex:i] normalPing:YES];
+//        }
+//    }
 }
 
 
@@ -316,6 +330,7 @@ static NSString *const kCheckOutIPURL = @"";
         
         // 通知代理诊断结束
         [self recordStepInfo:@"Diagnosis End..."];
+        
         if (self.didEndBlock) {
             self.didEndBlock(_logInfo);
         }
@@ -369,5 +384,42 @@ static NSString *const kCheckOutIPURL = @"";
     return app_uuid;
 }
 
+#pragma mark - RNCConnectionStateWatcherDelegate
+- (void)connectionStateWatcher:(RNCConnectionStateWatcher *)connectionStateWatcher didUpdateState:(RNCConnectionState *)state
+{
+    _curNetType = [self resolveConnectionState:state];
+}
+
+- (NETWORK_TYPE)resolveConnectionState:(RNCConnectionState *)state
+{
+    NETWORK_TYPE resultType = NETWORK_TYPE_NONE;
+    
+    if ([state.type isEqualToString:RNCConnectionTypeNone]) {
+        resultType = NETWORK_TYPE_NONE;
+    }
+    
+    if ([state.type isEqualToString:RNCConnectionTypeWifi] || [state.type isEqualToString:RNCConnectionTypeEthernet]) {
+        resultType = NETWORK_TYPE_WIFI;
+    }
+    
+    if ([state.type isEqualToString:RNCCellularGeneration2g] ) {
+        resultType = NETWORK_TYPE_2G;
+    }
+    
+    if ([state.type isEqualToString:RNCCellularGeneration3g] ) {
+        resultType = NETWORK_TYPE_3G;
+    }
+    
+    if ([state.type isEqualToString:RNCCellularGeneration4g] ) {
+        resultType = NETWORK_TYPE_4G;
+    }
+    
+    return resultType;
+}
+
+- (NETWORK_TYPE)getNetworkConnectionType
+{
+    return [self resolveConnectionState:self.connectionStateWatcher.currentState];
+}
 
 @end
