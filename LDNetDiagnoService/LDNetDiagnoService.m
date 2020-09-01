@@ -146,9 +146,13 @@ static NSString *const kCheckOutIPURL = @"";
     // traceroute
     [self recordStepInfo:@"\nStart Traceroute..."];
     if (_traceRouter) {
-        [NSThread detachNewThreadSelector:@selector(doTraceRoute:)
-                                         toTarget:_traceRouter
-                                       withObject:domain];
+//        [NSThread detachNewThreadSelector:@selector(doTraceRoute:)
+//                                         toTarget:_traceRouter
+//                                       withObject:domain];
+        
+        // 已经是子线程，没必要再创建子线程
+        // 而且会导致 self.hostAddress 在不同的线程设置为nil，导致LDSimplePing.sendPingWithData中assert self.hostAddress报错
+        [_traceRouter doTraceRoute:domain];
     }
 }
 
