@@ -175,7 +175,9 @@ static NSString *const kCheckOutIPURL = @"";
 
         if (_traceRouter != nil) {
             [_traceRouter stopTrace];
-            _traceRouter = nil;
+            // 下面这行代码会导致正在执行中的 traceRouter 对象被释放掉，进而在内部的 while 循环中访问 self.delegate 时，由于 self 已经是野指针了，所以会直接 crash 掉
+            // 在业务方调用 stopNetDialogsis 后会将当前对象置为 nil
+//            _traceRouter = nil;
         }
 
         _isRunning = NO;
