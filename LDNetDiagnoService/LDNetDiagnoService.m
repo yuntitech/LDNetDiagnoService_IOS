@@ -15,7 +15,7 @@
 #import "LDNetTimer.h"
 #import "LDNetConnect.h"
 #import <react-native-netinfo/RNCConnectionStateWatcher.h>
-
+#import <libkern/OSAtomic.h>
 static NSString *const kPingOpenServerIP = @"";
 static NSString *const kCheckOutIPURL = @"";
 
@@ -38,12 +38,17 @@ static NSString *const kCheckOutIPURL = @"";
     NSArray *_hostAddress;
 
     NSMutableString *_logInfo;  //记录网络诊断log日志
-    BOOL _isRunning;
+//    BOOL _isRunning;
     BOOL _connectSuccess;  //记录连接是否成功
     LDNetPing *_netPinger;
     LDNetTraceRoute *_traceRouter;
     LDNetConnect *_netConnect;
+    
+    volatile uint32_t _IsRunning;
 }
+
+
+
 /**
  完成检测任务的域名计数器
  */
@@ -66,7 +71,7 @@ static NSString *const kCheckOutIPURL = @"";
         _domainList = domainList;
         
         _logInfo = [[NSMutableString alloc] initWithCapacity:512 * domainList.count];
-        _isRunning = NO;
+//        _isRunning = NO;
         
         _finishDomainCount = 0;
         
@@ -103,7 +108,8 @@ static NSString *const kCheckOutIPURL = @"";
     if (!self.domainList || self.domainList.count == 0) return;
     
     // 设置 _isRunning 标志位为 YES
-    _isRunning = YES;
+//    _isRunning = YES;
+    [self setIsRunning:YES];
     
     // 设置 logInfo
     [_logInfo setString:@""];
@@ -162,7 +168,7 @@ static NSString *const kCheckOutIPURL = @"";
  */
 - (void)stopNetDialogsis
 {
-    if (_isRunning) {
+    if ([self isRunning]) {
         if (_netConnect != nil) {
             [_netConnect stopConnect];
             _netConnect = nil;
@@ -174,13 +180,13 @@ static NSString *const kCheckOutIPURL = @"";
         }
 
         if (_traceRouter != nil) {
-            [_traceRouter stopTrace];
+            [_traceRouter setIsRunning:NO];
             // 下面这行代码会导致正在执行中的 traceRouter 对象被释放掉，进而在内部的 while 循环中访问 self.delegate 时，由于 self 已经是野指针了，所以会直接 crash 掉
             // 在业务方调用 stopNetDialogsis 后会将当前对象置为 nil
 //            _traceRouter = nil;
         }
 
-        _isRunning = NO;
+        [self setIsRunning:NO];
         self.finishDomainCount = 0;
     }
 }
@@ -332,7 +338,8 @@ static NSString *const kCheckOutIPURL = @"";
     
     if (self.finishDomainCount == self.domainList.count) {
         // 设置 _isRunning 标志位为 NO
-        _isRunning = NO;
+//        _isRunning = NO;
+        [self setIsRunning:NO];
         
         // 通知代理诊断结束
         [self recordStepInfo:@"Diagnosis End..."];
@@ -426,6 +433,19 @@ static NSString *const kCheckOutIPURL = @"";
 - (NETWORK_TYPE)getNetworkConnectionType
 {
     return [self resolveConnectionState:self.connectionStateWatcher.currentState];
+}
+
+#pragma mark - Thread Safe
+- (BOOL)isRunning {
+    return _IsRunning != 0;
+}
+
+- (void)setIsRunning:(BOOL)allowed {
+    if (allowed) {
+        OSAtomicOr32Barrier(1, & _IsRunning); //Atomic bitwise OR of two 32-bit values with barrier
+    } else {
+        OSAtomicAnd32Barrier(0, & _IsRunning); //Atomic bitwise AND of two 32-bit values with barrier.
+    }
 }
 
 @end
