@@ -30,7 +30,7 @@
         udpPort = port;
         readTimeout = timeout;
         maxAttempts = attempts;
-        running = @"";
+        running = @"running";
     }
 
     return self;
